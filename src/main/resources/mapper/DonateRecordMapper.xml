@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.health.social.mapper.DonateRecordMapper">
+
+    <select id="selectConfirmedBetween" resultType="com.health.social.entity.DonateRecord">
+        SELECT id, biz_no, user_id, project_id, amount, status, tx_no, create_time, update_time
+        FROM t_donate_record
+        WHERE status = 'CONFIRMED'
+          AND create_time &gt;= #{from}
+          AND create_time &lt; #{to}
+    </select>
+
+</mapper>

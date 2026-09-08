@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.health.social.mapper.DonateLocalRecordMapper">
+
+    <select id="selectRetryable" resultType="com.health.social.entity.DonateLocalRecord">
+        SELECT id, biz_no, donate_id, user_id, project_id, amount, status,
+               retry_count, next_retry_at, tx_no, last_error, create_time, update_time
+        FROM t_donate_local_record
+        WHERE status IN ('PENDING', 'SENT')
+          AND next_retry_at &lt;= #{now}
+        ORDER BY next_retry_at
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectDead" resultType="com.health.social.entity.DonateLocalRecord">
+        SELECT id, biz_no, donate_id, user_id, project_id, amount, status,
+               retry_count, next_retry_at, tx_no, last_error, create_time, update_time
+        FROM t_donate_local_record
+        WHERE retry_count &gt;= #{retryLimit}
+          AND status &lt;&gt; 'SUCCESS'
+        LIMIT #{limit}
+    </select>
+
+</mapper>

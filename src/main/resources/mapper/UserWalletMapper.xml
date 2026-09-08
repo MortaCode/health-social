@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.health.social.mapper.UserWalletMapper">
+
+    <!-- 条件扣款 + 乐观锁：余额不足时影响行数为 0 -->
+    <update id="deduct">
+        UPDATE t_user_wallet
+        SET balance = balance - #{amount},
+            version  = version + 1,
+            update_time = NOW()
+        WHERE user_id = #{userId}
+          AND balance >= #{amount}
+    </update>
+
+    <update id="refund">
+        UPDATE t_user_wallet
+        SET balance = balance + #{amount},
+            version  = version + 1,
+            update_time = NOW()
+        WHERE user_id = #{userId}
+    </update>
+
+</mapper>

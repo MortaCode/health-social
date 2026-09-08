@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.health.social.mapper.ArticleMapper">
+
+    <!-- 批量增减点赞数：一次网络往返完成整批更新 -->
+    <update id="batchIncrLikeCount" parameterType="java.util.List">
+        <foreach collection="list" item="i" separator=";">
+            UPDATE t_article
+            SET like_count = GREATEST(0, like_count + #{i.delta}),
+                update_time = NOW()
+            WHERE id = #{i.articleId}
+        </foreach>
+    </update>
+
+    <!-- 全量回写：以 Redis 计数为准，修正 DB 漂移 -->
+    <update id="batchSetLikeCount" parameterType="java.util.List">
+        <foreach collection="list" item="i" separator=";">
+            UPDATE t_article
+            SET like_count = #{i.delta},
+                update_time = NOW()
+            WHERE id = #{i.articleId}
+        </foreach>
+    </update>
+
+    <select id="selectArticlesByIds" resultType="com.health.social.entity.Article">
+        SELECT id, author_id, title, summary, content, cover,
+               like_count, comment_count, status, create_time, update_time
+        FROM t_article
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+</mapper>

@@ -1,0 +1,148 @@
+server:
+  port: 8080
+#  tomcat:
+#    threads:
+#      max: 200
+#      min-spare: 10
+#    uri-encoding: UTF-8
+#    connection-timeout: 60s
+#    max-http-form-post-size: 10MB
+#    max-swallow-size: 10MB
+
+
+spring:
+  application:
+    name: health-social
+#  profiles:
+#    active: de
+#  threads:
+#    virtual:
+#      enabled: false
+#  autoconfigure:
+#    exclude:
+#      org.springframework.boot.autoconfigure.aop.AopAutoConfiguration
+  cache:
+    type: redis
+    redis:
+      key-prefix: ${spring.application.name}
+      time-to-live: 600s
+      cache-null-values: false
+
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/health_social?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true&allowPublicKeyRetrieval=true&useSSL=false&allowMultiQueries=true
+    username: root
+    password:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 5
+      connection-timeout: 3000
+
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      database: 0
+      timeout: 3s
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 32
+          max-idle: 16
+          min-idle: 4
+
+  rabbitmq:
+    host: 127.0.0.1
+    port: 5672
+    username: guest
+    password: guest
+    virtual-host: /
+    connection-timeout: 3000
+    # 生产者确认：点赞消息不允许丢
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        # 手动 ACK：聚合落库成功才确认
+        acknowledge-mode: manual
+        prefetch: 500
+        concurrency: 4
+        max-concurrency: 8
+        # 关闭 Spring 内置 retry，重试由 DLX + TTL 延迟队列自行控制
+        retry:
+          enabled: false
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.health.social.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: assign_id
+
+logging:
+  file:
+    path: /data/logs/${spring.application.name}
+  level:
+    root: INFO
+    com.health.social: INFO
+
+
+
+# ===================== 业务参数 =====================
+health:
+  # ---------- 热点探测（HeavyKeeper） ----------
+  hot:
+    depth: 4          # 哈希行数 d
+    width: 100000     # 每行桶数 w
+    top-n: 100        # 热点榜单大小
+    # 本地热点集合刷新周期（把 TopN 主动灌入 Caffeine，保证本地命中率）
+    refresh-interval-ms: 30000
+    # 访问量达到该阈值即视为热点，强制写入本地缓存
+    local-cache-threshold: 5
+
+  # ---------- 多级缓存 ----------
+  cache:
+    l1-max-size: 20000
+    l1-ttl-seconds: 300      # Caffeine TTL 5 分钟
+    l2-ttl-seconds: 600      # Redis TTL 10 分钟（带随机抖动）
+    null-ttl-seconds: 120    # 空值缓存，防穿透
+    lock-wait-ms: 3000
+    lock-lease-ms: 5000
+
+  # ---------- 点赞削峰 ----------
+  like:
+    batch-size: 500          # 每 500 条刷盘
+    flush-interval-ms: 5000  # 或每 5 秒刷盘
+    max-retry: 3             # 超过后进入死信队列
+    retry-delay-ms: 10000    # 延迟重试队列 TTL
+    # 全量回写：以 Redis 计数为准修正 DB 漂移（每小时）
+    sync-cron: "0 15 * * * ?"
+
+  # ---------- Feed 流 ----------
+  feed:
+    big-v-follower-threshold: 50000   # 粉丝数超过该值走拉模式 + 分桶
+    bucket-ms: 21600000               # 大 V 时间分桶大小：6 小时
+    inbox-max-size: 1000              # 收件箱裁剪上限
+    pull-days: 7                      # 拉模式回溯天数
+    default-page-size: 20
+
+  # ---------- 限流 ----------
+  ratelimit:
+    normal-rate: 20        # 普通用户令牌生成速率（个/秒）
+    normal-capacity: 40
+    doctor-rate: 100       # 认证医生
+    doctor-capacity: 200
+
+  # ---------- 公益打赏 ----------
+  debug-default-level: 0
+  donate:
+    foundation-base-url: http://127.0.0.1:9099/mock-foundation
+    retry-limit: 5
+    retry-fixed-delay-ms: 60000
+    # T+1 日终对账：每天 02:30
+    reconcile-cron: "0 30 2 * * ?"
