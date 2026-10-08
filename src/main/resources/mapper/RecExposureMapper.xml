@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.health.social.mapper.RecExposureMapper">
+
+    <!-- 曝光流水批量落库：单条 insert 在高 QPS 下会把 DB 打穿，必须批量 -->
+    <insert id="insertBatch" parameterType="java.util.List">
+        INSERT INTO t_rec_exposure
+        (id, user_id, article_id, scene, position, score, channels, request_id, exposed_at)
+        VALUES
+        <foreach collection="list" item="i" separator=",">
+            (#{i.id}, #{i.userId}, #{i.articleId}, #{i.scene}, #{i.position},
+             #{i.score}, #{i.channels}, #{i.requestId}, #{i.exposedAt})
+        </foreach>
+    </insert>
+
+</mapper>

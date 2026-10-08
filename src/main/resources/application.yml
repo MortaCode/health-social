@@ -146,3 +146,73 @@ health:
     retry-fixed-delay-ms: 60000
     # T+1 日终对账：每天 02:30
     reconcile-cron: "0 30 2 * * ?"
+
+  # ===================== 推荐模块（独立于推流模块） =====================
+  # 说明：本模块的所有状态都在 rec:* 命名空间下，表也在独立的 rec_schema.sql 里，
+  #       与 feed/like/donate 完全隔离；删除本段配置不会影响推流模块。
+  recommend:
+    # ---------- 召回 ----------
+    recall-limit-per-channel: 200     # 单路召回上限（5 路 → 最多 1000 条候选）
+    candidate-limit: 800              # 进入排序阶段的候选上限
+    follow-recall-max-followees: 200  # 关注召回最多扫描多少个关注对象
+    follow-recall-per-author: 20      # 关注召回每个作者取几条
+    interest-recall-max-tags: 10      # 兴趣召回最多用几个兴趣标签
+    interest-recall-per-tag: 100      # 兴趣召回每个标签取几条
+
+    # ---------- 排序 ----------
+    freshness-half-life-hours: 24     # 时间衰减半衰期（小时）
+    interest-max-tags-per-article: 5  # 兴趣匹配时单篇最多参与几个标签
+    weights:                          # 老用户权重档（各项特征已归一化到 0~1）
+      hot: 0.28                       # 全局热度（曝光 + 点击对数归一）
+      quality: 0.24                   # 内容质量（点赞率 Wilson 下界）
+      fresh: 0.20                     # 新鲜度（指数衰减）
+      interest: 0.14                  # 兴趣匹配
+      follow: 0.06                    # 关注加成
+      author: 0.04                    # 作者权威度（医生等级）
+      channel: 0.04                   # 召回通道置信度
+    cold-start-weights:               # 冷启动权重档（兴趣项归零，权重让给热点/新鲜）
+      hot: 0.38
+      quality: 0.20
+      fresh: 0.28
+      interest: 0.0
+      follow: 0.06
+      author: 0.04
+      channel: 0.04
+
+    # ---------- 打散 ----------
+    max-per-author: 2                 # 一页内同一作者最多几条
+    max-per-tag: 3                    # 一页内同一标签最多几条
+
+    # ---------- 曝光去重 ----------
+    exposure-window-size: 2000        # 在线曝光集合保留条数（滑动窗口）
+    exposure-ttl-days: 30
+    filter-liked: true                # 是否硬过滤已点赞内容（避免重复推荐用户已认可的内容）
+
+    # ---------- 兴趣画像 ----------
+    interest-cap: 10.0                # 兴趣分上限
+    interest-boost-click: 0.3         # 点击一次的兴趣增量
+    interest-boost-like: 1.0          # 点赞一次的兴趣增量
+    interest-penalty-dislike: 2.0     # 不感兴趣的兴趣扣减
+    interest-persist-min-tags: 5      # 回写 DB 时保留的兴趣标签数
+
+    # ---------- 相似度（Item-CF / 标签 Jaccard） ----------
+    sim-rebuild-article-limit: 2000   # 重建时处理的最近文章数
+    sim-rebuild-group-cap: 100        # 同标签下参与两两比较的文章数上限
+    sim-top-k: 50                     # 每篇保留的相似文章数
+    sim-co-like-seed-limit: 50        # 单用户参与共现的最近点赞数
+    sim-recall-per-seed: 30           # 相似召回每篇种子取几条
+    sim-recall-max-seeds: 5           # 相似召回最多用几篇种子
+    sim-rebuild-cron: "0 */10 * * * ?"    # 相似度重建：每 10 分钟
+
+    # ---------- 候选池 ----------
+    pool-max-size: 5000               # 候选池上限
+    pool-reconcile-batch: 500         # 兜底扫描每批条数
+    pool-reconcile-cron: "0 */2 * * * ?"  # 兜底扫描：每 2 分钟
+    active-user-window-size: 5000     # 活跃用户榜容量
+    interest-persist-cron: "0 */5 * * * ?" # 兴趣画像回写：每 5 分钟
+
+    # ---------- 分页与落库 ----------
+    default-page-size: 20
+    max-page-size: 50
+    flush-interval-ms: 5000           # 曝光/反馈缓冲刷盘间隔
+    flush-batch-size: 500             # 单次刷盘最大条数

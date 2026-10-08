@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.health.social.mapper.RecArticleScanMapper">
+
+    <!--
+      (create_time, id) 双键游标增量扫描。
+
+      写成 OR 形式而不是 MySQL 的元组比较 (a,b) > (c,d)，是为了让优化器
+      能命中 idx_author_time 之外的 create_time 排序扫描，且语义在所有 MySQL 版本上一致。
+      配合 ORDER BY create_time, id LIMIT n，走的是索引顺序读，不会出现 filesort。
+    -->
+    <select id="scanAfter" resultType="com.health.social.entity.Article">
+        SELECT id, author_id, title, summary, content, cover,
+               like_count, comment_count, status, create_time, update_time
+        FROM t_article
+        WHERE create_time &gt; #{createTime}
+           OR (create_time = #{createTime} AND id &gt; #{id})
+        ORDER BY create_time ASC, id ASC
+        LIMIT #{limit}
+    </select>
+
+</mapper>
