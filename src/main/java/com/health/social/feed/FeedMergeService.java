@@ -34,7 +34,18 @@ import java.util.Set;
  *
  * <h3>游标</h3>
  * <p>使用 {@code score:articleId} 复合游标。只用时间戳做游标时，
- * 同一毫秒发布的两条动态会被翻页漏掉；加上 articleId 做二级排序键即可严格有序。
+ * 同一秒发布的两条动态会被翻页漏掉（{@code create_time} 是 DATETIME 秒级精度），
+ * 加上 articleId 做二级排序键即可严格有序。格式与解析见 {@link FeedCursor}。
+ *
+ * <h3>翻页必须守住的两条边界</h3>
+ * <ol>
+ *   <li><b>上界取游标，不取 now。</b>如果用 now 做上界，两次请求之间新发的帖子
+ *       score 更高，会占满 {@code count} 配额，随后全部被"已返回"判断过滤掉，
+ *       整页变成空的 —— 而 Feed 是实时流，两次请求之间有新帖几乎是必然的。</li>
+ *   <li><b>下界不能被"现在"抬高。</b>首页用 now - pullDays 限制首屏回溯范围；
+ *       翻页时下界只能由硬下限（max-backtrack-days）决定，否则游标一超过时间窗，
+ *       下界就跑到游标前面去，查询区间为空，翻页静默终止。</li>
+ * </ol>
  */
 @Slf4j
 @Service
@@ -44,8 +55,13 @@ public class FeedMergeService {
     private final BigKeySplitter splitter;
     private final FollowService followService;
 
+    /** 首屏回溯天数：决定第一页从哪里开始往下取 */
     @Value("${health.feed.pull-days:7}")
     private int pullDays;
+
+    /** 翻页硬下限：游标最多能往前翻多久，防止无限回溯 */
+    @Value("${health.feed.max-backtrack-days:90}")
+    private int maxBacktrackDays;
 
     @Value("${health.feed.default-page-size:20}")
     private int defaultPageSize;
@@ -65,66 +81,64 @@ public class FeedMergeService {
      */
     public FeedPage merge(long userId, String cursor, Integer size) {
         int pageSize = (size == null || size <= 0) ? defaultPageSize : Math.min(size, 100);
+        // 多取一条：既用来探测 hasMore，也抵掉"游标自己那条不会再返回"造成的损耗
+        int fetch = pageSize + 1;
 
-        // 解析游标：score:articleId
-        double cursorScore = 0D;
-        long cursorArticleId = 0L;
-        boolean hasCursor = cursor != null && !cursor.isBlank();
-        if (hasCursor) {
-            String[] parts = cursor.split(":");
-            try {
-                cursorScore = Double.parseDouble(parts[0]);
-                if (parts.length > 1) {
-                    cursorArticleId = Long.parseLong(parts[1]);
-                }
-            } catch (NumberFormatException e) {
-                hasCursor = false;
-            }
-        }
+        FeedCursor.Parsed parsed = FeedCursor.parse(cursor);
+        boolean hasCursor = parsed != null;
+        double cursorScore = hasCursor ? parsed.score() : 0D;
+        long cursorArticleId = hasCursor ? parsed.articleId() : 0L;
 
         long now = System.currentTimeMillis();
-        // 拉模式下界：不允许无限回溯（历史数据走离线索服）
-        long lowerBound = Math.max(cursorScore > 0 ? (long) cursorScore : 0L, now - pullDays * 86_400_000L);
-        if (hasCursor) {
-            lowerBound = Math.max(lowerBound, (long) cursorScore);
-        }
+
+        // 上界：首页取 now，翻页取游标 —— 从游标往下取，新帖不会挤占本页配额
+        double maxScore = hasCursor ? cursorScore : now;
+        // 下界：首页受 pullDays 约束；翻页只受硬下限约束，不能被 now 抬高
+        long lowerBound = hasCursor
+                ? now - (long) maxBacktrackDays * 86_400_000L
+                : now - (long) pullDays * 86_400_000L;
 
         List<List<FeedItem>> sources = new ArrayList<>();
 
         // ---------- 源 1：收件箱 ----------
+        String inboxKey = RedisKeys.feedInbox(userId);
+        // 同 score 分组里上一页已经返回过的部分，直接用 offset 跳过，不要取回来再过滤
+        long inboxOffset = hasCursor
+                ? FeedCursor.sameScorePrefix(redis, inboxKey, cursorScore, cursorArticleId)
+                : 0L;
         Set<ZSetOperations.TypedTuple<String>> inboxTuples = redis.opsForZSet()
-                .reverseRangeByScoreWithScores(RedisKeys.feedInbox(userId), lowerBound, now, 0, pageSize);
+                .reverseRangeByScoreWithScores(inboxKey, lowerBound, maxScore, inboxOffset, fetch);
         sources.add(toItems(inboxTuples, -1L, FeedItem.SRC_INBOX));
 
         // ---------- 源 2：关注的大 V 分片 ----------
         List<Long> bigVs = followService.myBigVFollowees(userId);
         for (Long v : bigVs) {
-            List<FeedItem> pulled = splitter.range(v, lowerBound, now, pageSize);
+            List<FeedItem> pulled = splitter.range(v, lowerBound, maxScore, fetch,
+                    hasCursor ? cursorScore : null, cursorArticleId);
             if (!pulled.isEmpty()) {
                 sources.add(pulled);
             }
         }
 
-        // ---------- 归并 + 游标过滤 ----------
-        List<FeedItem> merged = kWayMerge(sources, pageSize, hasCursor, cursorScore, cursorArticleId);
+        // ---------- 归并 ----------
+        List<FeedItem> merged = kWayMerge(sources, fetch);
 
-        boolean hasMore = merged.size() >= pageSize;
-        String nextCursor = null;
-        if (!merged.isEmpty()) {
-            FeedItem last = merged.get(merged.size() - 1);
-            nextCursor = ((long) last.getScore()) + ":" + last.getArticleId();
-        }
-        return new FeedPage(merged, nextCursor, hasMore);
+        boolean hasMore = merged.size() > pageSize;
+        List<FeedItem> items = hasMore ? new ArrayList<>(merged.subList(0, pageSize)) : merged;
+
+        // 游标必须取"本页真正返回的最后一条"，所以要在截断之后算
+        String nextCursor = items.size() == pageSize
+                ? FeedCursor.format(items.get(items.size() - 1).getScore(),
+                                    items.get(items.size() - 1).getArticleId())
+                : null;
+        return new FeedPage(items, nextCursor, hasMore);
     }
 
     /**
-     * k 路归并：所有源内部已按 score 降序，用最小堆（按 score 降序比较）做归并
+     * k 路归并：所有源内部已按 (score desc, articleId desc) 排好序，
+     * 用最小堆（按 score 降序比较）做归并
      */
-    private List<FeedItem> kWayMerge(List<List<FeedItem>> sources,
-                                     int pageSize,
-                                     boolean hasCursor,
-                                     double cursorScore,
-                                     long cursorArticleId) {
+    private List<FeedItem> kWayMerge(List<List<FeedItem>> sources, int limit) {
         Comparator<Node> cmp = (a, b) -> {
             int c = Double.compare(b.item.getScore(), a.item.getScore());
             if (c != 0) {
@@ -140,20 +154,11 @@ public class FeedMergeService {
             }
         }
 
-        List<FeedItem> out = new ArrayList<>(pageSize);
-        Set<Long> seen = new HashSet<>(pageSize * 4);
-        while (!heap.isEmpty() && out.size() < pageSize) {
+        List<FeedItem> out = new ArrayList<>(limit);
+        Set<Long> seen = new HashSet<>(limit * 4);
+        while (!heap.isEmpty() && out.size() < limit) {
             Node node = heap.poll();
             idx[node.src]++;
-
-            // 游标过滤：严格取"排在上一条之后"的内容
-            if (hasCursor) {
-                double s = node.item.getScore();
-                if (s > cursorScore || (s == cursorScore && node.item.getArticleId() >= cursorArticleId)) {
-                    fillNext(sources, idx, node.src, heap);
-                    continue;
-                }
-            }
             if (seen.add(node.item.getArticleId())) {
                 out.add(node.item);
             }

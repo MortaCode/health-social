@@ -85,21 +85,33 @@ public class BigKeySplitter {
     /**
      * 拉取某个作者在时间区间内的动态（按 score 降序，即最新在前）
      *
-     * @param fromMs 起始时间（含）
-     * @param toMs   结束时间（含）
-     * @param limit  最多返回条数
+     * <p>翻页语义与收件箱保持一致：{@code toScore} 传游标的 score（不是 now），
+     * 游标所在的桶要用 offset 跳过"同一 score 分组里上一页已返回的部分"。
+     *
+     * @param fromMs         起始时间（含）
+     * @param toScore        结束时间（含）；翻页时传游标 score，首页传 now
+     * @param limit          最多返回条数
+     * @param cursorScore    游标 score，首页传 null
+     * @param cursorArticleId 游标 articleId，配合 cursorScore 定位同分组内的已返回前缀
      */
-    public List<FeedItem> range(long authorId, long fromMs, long toMs, int limit) {
-        List<Long> buckets = bucketsBetween(authorId, fromMs, toMs);
+    public List<FeedItem> range(long authorId, long fromMs, double toScore, int limit,
+                                Double cursorScore, long cursorArticleId) {
+        List<Long> buckets = bucketsBetween(authorId, fromMs, (long) toScore);
         if (buckets.isEmpty()) {
             return Collections.emptyList();
         }
+        long cursorBucket = cursorScore == null ? Long.MIN_VALUE : bucketOf((long) (double) cursorScore);
         List<FeedItem> result = new ArrayList<>(limit);
         // 从最新的桶往回扫，凑够 limit 就停，避免无效读取
         for (int i = buckets.size() - 1; i >= 0 && result.size() < limit; i--) {
-            String shardKey = RedisKeys.feedOutboxShard(authorId, buckets.get(i));
+            long bucket = buckets.get(i);
+            String shardKey = RedisKeys.feedOutboxShard(authorId, bucket);
+            // 只有游标所在的那个桶才需要跳过已返回前缀，更旧的桶从头取
+            long offset = (cursorScore != null && bucket == cursorBucket)
+                    ? FeedCursor.sameScorePrefix(redis, shardKey, cursorScore, cursorArticleId)
+                    : 0L;
             Set<ZSetOperations.TypedTuple<String>> tuples = redis.opsForZSet()
-                    .reverseRangeByScoreWithScores(shardKey, fromMs, toMs, 0, limit);
+                    .reverseRangeByScoreWithScores(shardKey, fromMs, toScore, offset, limit - result.size());
             if (tuples == null || tuples.isEmpty()) {
                 continue;
             }
@@ -117,8 +129,21 @@ public class BigKeySplitter {
                 result.add(FeedItem.of(articleId, authorId, score, FeedItem.SRC_PULL_BIG_V));
             }
         }
-        result.sort((a, b) -> Double.compare(b.getScore(), a.getScore()));
+        // 排序键必须和归并的比较器完全一致：(score desc, articleId desc)
+        result.sort((a, b) -> {
+            int c = Double.compare(b.getScore(), a.getScore());
+            return c != 0 ? c : Long.compare(b.getArticleId(), a.getArticleId());
+        });
         return result;
+    }
+
+    /**
+     * 首页语义的便捷重载：不带游标，取到 {@code toMs} 为止的最新 {@code limit} 条。
+     *
+     * <p>推荐等非翻页场景直接用它，不用关心游标参数。
+     */
+    public List<FeedItem> range(long authorId, long fromMs, long toMs, int limit) {
+        return range(authorId, fromMs, (double) toMs, limit, null, 0L);
     }
 
     /**

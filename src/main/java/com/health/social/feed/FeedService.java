@@ -83,7 +83,6 @@ public class FeedService {
         // ---- 普通用户：写自己的发件箱（未分桶，量小）----
         redis.opsForZSet().add(RedisKeys.feedOutbox(authorId), String.valueOf(articleId), score);
         redis.expire(RedisKeys.feedOutbox(authorId), java.time.Duration.ofDays(90));
-
         // ---- 推模式：异步扇出到粉丝收件箱 ----
         fanoutExecutor.execute(() -> fanoutToFollowers(authorId, articleId, score));
     }
@@ -152,6 +151,7 @@ public class FeedService {
      */
     public void onUnfollow(long followerId, long followeeId) {
         followService.evict(followerId);
+        //拉取医生发件箱 --> 删除居民对应的收件箱
         Set<ZSetOperations.TypedTuple<String>> items = redis.opsForZSet()
                 .reverseRangeWithScores(RedisKeys.feedOutbox(followeeId), 0, 199);
         if (items == null) {

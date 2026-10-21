@@ -128,7 +128,8 @@ health:
     big-v-follower-threshold: 50000   # 粉丝数超过该值走拉模式 + 分桶
     bucket-ms: 21600000               # 大 V 时间分桶大小：6 小时
     inbox-max-size: 1000              # 收件箱裁剪上限
-    pull-days: 7                      # 拉模式回溯天数
+    pull-days: 7                      # 首屏回溯天数（只决定第一页从哪里开始）
+    max-backtrack-days: 90            # 翻页硬下限，与分片 TTL 对齐，防止无限回溯
     default-page-size: 20
 
   # ---------- 限流 ----------
